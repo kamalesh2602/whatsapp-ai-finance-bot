@@ -6,6 +6,7 @@ import mongoose from "mongoose";
 
 import { parseExpense } from "./services/aiParser.js";
 import Expense from "./models/Expense.js";
+import Budget from "./models/Budget.js";
 
 const app = express();
 
@@ -17,12 +18,12 @@ mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log("MongoDB connected"))
   .catch(err => console.log(err));
 
-// ---------------- ROUTE ----------------
+// ---------------- TEST ----------------
 app.get("/", (req, res) => {
   res.send("Server running 🚀");
 });
 
-// ---------------- DETECTION ----------------
+// ---------------- HELPERS ----------------
 function isExpense(text) {
   return /\d+/.test(text);
 }
@@ -32,41 +33,23 @@ function isQuery(text) {
   return (
     msg.includes("how much") ||
     msg.includes("total") ||
-    msg.includes("spend") ||
-    msg.includes("expense")
+    msg.includes("spend")
   );
 }
 
 function isInsightQuery(text) {
   const msg = text.toLowerCase();
   return (
-    msg.includes("analysis") ||
     msg.includes("summary") ||
+    msg.includes("insight") ||
     msg.includes("how is my spending")
   );
 }
 
-function isComparisonQuery(text) {
-  const msg = text.toLowerCase();
-  return (
-    msg.includes("compare") ||
-    msg.includes("trend vs") ||
-    msg.includes("last month")
-  );
+function isBudgetSet(text) {
+  return text.toLowerCase().includes("budget");
 }
 
-function isTrendQuery(text) {
-  const msg = text.toLowerCase();
-  return (
-    msg.includes("breakdown") ||
-    msg.includes("distribution") ||
-    msg.includes("where am i spending") ||
-    msg.includes("spending most") ||
-    msg.includes("trend")
-  );
-}
-
-// ---------------- CATEGORY ----------------
 function extractCategory(text) {
   const msg = text.toLowerCase();
 
@@ -74,48 +57,7 @@ function extractCategory(text) {
   if (msg.includes("travel")) return "travel";
   if (msg.includes("shopping")) return "shopping";
 
-  return null;
-}
-
-// ---------------- TIME ----------------
-function getDateRange(text) {
-  const msg = text.toLowerCase();
-  const now = new Date();
-
-  let start = null;
-  let end = null;
-
-  if (msg.includes("this month")) {
-    start = new Date(now.getFullYear(), now.getMonth(), 1);
-    end = new Date();
-  }
-
-  else if (msg.includes("last month")) {
-    start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    end = new Date(now.getFullYear(), now.getMonth(), 0);
-  }
-
-  else if (msg.includes("this week")) {
-    const day = now.getDay();
-    start = new Date(now);
-    start.setDate(now.getDate() - day);
-    start.setHours(0, 0, 0, 0);
-    end = new Date();
-  }
-
-  return { start, end };
-}
-
-// ---------------- MONTH RANGES ----------------
-function getMonthRanges() {
-  const now = new Date();
-
-  return {
-    thisMonthStart: new Date(now.getFullYear(), now.getMonth(), 1),
-    now,
-    lastMonthStart: new Date(now.getFullYear(), now.getMonth() - 1, 1),
-    lastMonthEnd: new Date(now.getFullYear(), now.getMonth(), 0)
-  };
+  return "general";
 }
 
 // ---------------- WEBHOOK ----------------
@@ -123,43 +65,25 @@ app.post("/webhook", async (req, res) => {
   const message = req.body.Body;
   const phone = req.body.From.replace("whatsapp:", "");
 
-  console.log("\n-------------------------");
-  console.log("Incoming:", message);
+  console.log("\nIncoming:", message);
 
   try {
 
-    // ================= COMPARISON =================
-    if (isComparisonQuery(message)) {
+    // ================= SET BUDGET =================
+    if (isBudgetSet(message)) {
 
-      const { thisMonthStart, now, lastMonthStart, lastMonthEnd } = getMonthRanges();
+      const amount = parseInt(message.match(/\d+/)?.[0] || 0);
+      const category = extractCategory(message);
 
-      const thisMonth = await Expense.aggregate([
-        { $match: { phone, createdAt: { $gte: thisMonthStart, $lte: now } } },
-        { $group: { _id: null, total: { $sum: "$amount" } } }
-      ]);
-
-      const lastMonth = await Expense.aggregate([
-        { $match: { phone, createdAt: { $gte: lastMonthStart, $lte: lastMonthEnd } } },
-        { $group: { _id: null, total: { $sum: "$amount" } } }
-      ]);
-
-      const thisTotal = thisMonth[0]?.total || 0;
-      const lastTotal = lastMonth[0]?.total || 0;
-
-      let trend = thisTotal > lastTotal
-        ? "📈 Spending increased"
-        : thisTotal < lastTotal
-        ? "📉 Spending decreased"
-        : "➡️ Spending same";
+      await Budget.findOneAndUpdate(
+        { phone, category },
+        { limit: amount },
+        { upsert: true }
+      );
 
       return res.send(`
         <Response>
-          <Message>
-💰 This Month: ₹${thisTotal}
-💰 Last Month: ₹${lastTotal}
-
-${trend}
-          </Message>
+          <Message>✅ Budget set: ₹${amount} for ${category}</Message>
         </Response>
       `);
     }
@@ -169,11 +93,20 @@ ${trend}
 
       const data = await Expense.aggregate([
         { $match: { phone } },
-        { $group: { _id: "$category", total: { $sum: "$amount" } } }
+        {
+          $group: {
+            _id: "$category",
+            total: { $sum: "$amount" }
+          }
+        }
       ]);
 
       if (!data.length) {
-        return res.send(`<Response><Message>No data yet</Message></Response>`);
+        return res.send(`
+          <Response>
+            <Message>No data yet. Start adding expenses.</Message>
+          </Response>
+        `);
       }
 
       const total = data.reduce((sum, i) => sum + i.total, 0);
@@ -189,59 +122,21 @@ ${trend}
       `);
     }
 
-    // ================= TREND =================
-    if (isTrendQuery(message)) {
-
-      const data = await Expense.aggregate([
-        { $match: { phone } },
-        { $group: { _id: "$category", total: { $sum: "$amount" } } }
-      ]);
-
-      if (!data.length) {
-        return res.send(`<Response><Message>No data available</Message></Response>`);
-      }
-
-      const total = data.reduce((sum, item) => sum + item.total, 0);
-
-      const breakdown = data.map(item => ({
-        category: item._id,
-        total: item.total,
-        percent: ((item.total / total) * 100).toFixed(1)
-      })).sort((a, b) => b.total - a.total);
-
-      let reply = "📊 Spending Breakdown:\n";
-
-      breakdown.forEach(item => {
-        reply += `\n${item.category}: ₹${item.total} (${item.percent}%)`;
-      });
-
-      reply += `\n\n👉 You spend most on ${breakdown[0].category}`;
-
-      return res.send(`<Response><Message>${reply}</Message></Response>`);
-    }
-
     // ================= QUERY =================
     if (!isExpense(message) && isQuery(message)) {
 
-      const category = extractCategory(message);
-      const { start, end } = getDateRange(message);
-
-      let match = { phone };
-
-      if (category) match.category = category;
-      if (start && end) match.createdAt = { $gte: start, $lte: end };
-
       const total = await Expense.aggregate([
-        { $match: match },
+        { $match: { phone } },
         { $group: { _id: null, total: { $sum: "$amount" } } }
       ]);
 
       const amount = total[0]?.total || 0;
 
-      let reply = `💰 You spent ₹${amount}`;
-      if (category) reply += ` on ${category}`;
-
-      return res.send(`<Response><Message>${reply}</Message></Response>`);
+      return res.send(`
+        <Response>
+          <Message>💰 You spent ₹${amount}</Message>
+        </Response>
+      `);
     }
 
     // ================= EXPENSE =================
@@ -252,16 +147,51 @@ ${trend}
       phone
     });
 
+    // 🔥 BUDGET CHECK
+    const budget = await Budget.findOne({
+      phone,
+      category: data.category
+    });
+
+    let alert = "";
+
+    if (budget) {
+      const total = await Expense.aggregate([
+        { $match: { phone, category: data.category } },
+        { $group: { _id: null, total: { $sum: "$amount" } } }
+      ]);
+
+      const spent = total[0]?.total || 0;
+      const percent = ((spent / budget.limit) * 100).toFixed(1);
+
+      alert = `\n⚠️ ${data.category}: ₹${spent}/${budget.limit} (${percent}%)`;
+
+      if (spent > budget.limit) {
+        alert += "\n🚨 Budget exceeded!";
+      }
+    }
+
     return res.send(`
       <Response>
-        <Message>✅ Added ₹${expense.amount} to ${expense.category}</Message>
+        <Message>
+✅ Added ₹${expense.amount} to ${expense.category}
+${alert}
+        </Message>
       </Response>
     `);
 
   } catch (err) {
     console.error(err);
-    return res.send(`<Response><Message>❌ Error</Message></Response>`);
+
+    return res.send(`
+      <Response>
+        <Message>❌ Couldn't understand. Try again.</Message>
+      </Response>
+    `);
   }
 });
 
-app.listen(3000, () => console.log("Server running"));
+// ---------------- START ----------------
+app.listen(3000, () => {
+  console.log("Server running on port 3000 🚀");
+});
