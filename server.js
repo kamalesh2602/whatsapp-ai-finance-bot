@@ -38,6 +38,17 @@ function isQuery(text) {
   );
 }
 
+function isInsightQuery(text) {
+  const msg = text.toLowerCase();
+
+  return (
+    msg.includes("analysis") ||
+    msg.includes("insight") ||
+    msg.includes("summary") ||
+    msg.includes("how is my spending")
+  );
+}
+
 // ---------------- CATEGORY ----------------
 function extractCategory(text) {
   const msg = text.toLowerCase();
@@ -49,7 +60,7 @@ function extractCategory(text) {
   return null;
 }
 
-// ---------------- TIME LOGIC ----------------
+// ---------------- TIME ----------------
 function getDateRange(text) {
   const msg = text.toLowerCase();
   const now = new Date();
@@ -57,25 +68,21 @@ function getDateRange(text) {
   let start = null;
   let end = null;
 
-  // THIS MONTH
   if (msg.includes("this month")) {
     start = new Date(now.getFullYear(), now.getMonth(), 1);
     end = new Date();
   }
 
-  // LAST MONTH
   else if (msg.includes("last month")) {
     start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     end = new Date(now.getFullYear(), now.getMonth(), 0);
   }
 
-  // THIS WEEK
   else if (msg.includes("this week")) {
     const day = now.getDay();
     start = new Date(now);
     start.setDate(now.getDate() - day);
     start.setHours(0, 0, 0, 0);
-
     end = new Date();
   }
 
@@ -85,14 +92,48 @@ function getDateRange(text) {
 // ---------------- WEBHOOK ----------------
 app.post("/webhook", async (req, res) => {
   const message = req.body.Body;
-
-  const rawPhone = req.body.From;
-  const phone = rawPhone.replace("whatsapp:", "");
+  const phone = req.body.From.replace("whatsapp:", "");
 
   console.log("\n-------------------------");
   console.log("Incoming:", message);
 
   try {
+
+    // ================= INSIGHTS =================
+    if (isInsightQuery(message)) {
+
+      const data = await Expense.aggregate([
+        { $match: { phone } },
+        {
+          $group: {
+            _id: "$category",
+            total: { $sum: "$amount" }
+          }
+        }
+      ]);
+
+      if (!data.length) {
+        return res.send(`
+          <Response>
+            <Message>No data yet. Start adding expenses.</Message>
+          </Response>
+        `);
+      }
+
+      const total = data.reduce((sum, item) => sum + item.total, 0);
+      const top = data.sort((a, b) => b.total - a.total)[0];
+
+      const reply = `
+💰 Total: ₹${total}
+📊 Top: ${top._id} (₹${top.total})
+      `;
+
+      return res.send(`
+        <Response>
+          <Message>${reply}</Message>
+        </Response>
+      `);
+    }
 
     // ================= QUERY =================
     if (!isExpense(message) && isQuery(message)) {
@@ -120,13 +161,12 @@ app.post("/webhook", async (req, res) => {
 
       const amount = total[0]?.total || 0;
 
-      // reply builder
       let replyText = `💰 You spent ₹${amount}`;
 
       if (category) replyText += ` on ${category}`;
-      if (message.toLowerCase().includes("last month")) replyText += " last month";
-      else if (message.toLowerCase().includes("this month")) replyText += " this month";
-      else if (message.toLowerCase().includes("this week")) replyText += " this week";
+      if (message.includes("last month")) replyText += " last month";
+      else if (message.includes("this month")) replyText += " this month";
+      else if (message.includes("this week")) replyText += " this week";
 
       return res.send(`
         <Response>
