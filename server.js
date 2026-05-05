@@ -12,12 +12,12 @@ const app = express();
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-// ---------------- DB CONNECTION ----------------
+// ---------------- DB ----------------
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log("MongoDB connected"))
   .catch(err => console.log(err));
 
-// ---------------- TEST ROUTE ----------------
+// ---------------- ROUTE ----------------
 app.get("/", (req, res) => {
   res.send("Server running 🚀");
 });
@@ -38,7 +38,7 @@ function isQuery(text) {
   );
 }
 
-// ---------------- CATEGORY EXTRACT ----------------
+// ---------------- CATEGORY ----------------
 function extractCategory(text) {
   const msg = text.toLowerCase();
 
@@ -47,6 +47,39 @@ function extractCategory(text) {
   if (msg.includes("shopping")) return "shopping";
 
   return null;
+}
+
+// ---------------- TIME LOGIC ----------------
+function getDateRange(text) {
+  const msg = text.toLowerCase();
+  const now = new Date();
+
+  let start = null;
+  let end = null;
+
+  // THIS MONTH
+  if (msg.includes("this month")) {
+    start = new Date(now.getFullYear(), now.getMonth(), 1);
+    end = new Date();
+  }
+
+  // LAST MONTH
+  else if (msg.includes("last month")) {
+    start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    end = new Date(now.getFullYear(), now.getMonth(), 0);
+  }
+
+  // THIS WEEK
+  else if (msg.includes("this week")) {
+    const day = now.getDay();
+    start = new Date(now);
+    start.setDate(now.getDate() - day);
+    start.setHours(0, 0, 0, 0);
+
+    end = new Date();
+  }
+
+  return { start, end };
 }
 
 // ---------------- WEBHOOK ----------------
@@ -58,19 +91,21 @@ app.post("/webhook", async (req, res) => {
 
   console.log("\n-------------------------");
   console.log("Incoming:", message);
-  console.log("Phone:", phone);
 
   try {
 
-    // ================= QUERY FLOW =================
+    // ================= QUERY =================
     if (!isExpense(message) && isQuery(message)) {
 
       const category = extractCategory(message);
+      const { start, end } = getDateRange(message);
 
       let matchStage = { phone };
 
-      if (category) {
-        matchStage.category = category;
+      if (category) matchStage.category = category;
+
+      if (start && end) {
+        matchStage.createdAt = { $gte: start, $lte: end };
       }
 
       const total = await Expense.aggregate([
@@ -85,13 +120,13 @@ app.post("/webhook", async (req, res) => {
 
       const amount = total[0]?.total || 0;
 
-      let replyText = "";
+      // reply builder
+      let replyText = `💰 You spent ₹${amount}`;
 
-      if (category) {
-        replyText = `💰 You spent ₹${amount} on ${category}`;
-      } else {
-        replyText = `💰 You spent ₹${amount}`;
-      }
+      if (category) replyText += ` on ${category}`;
+      if (message.toLowerCase().includes("last month")) replyText += " last month";
+      else if (message.toLowerCase().includes("this month")) replyText += " this month";
+      else if (message.toLowerCase().includes("this week")) replyText += " this week";
 
       return res.send(`
         <Response>
@@ -100,17 +135,13 @@ app.post("/webhook", async (req, res) => {
       `);
     }
 
-    // ================= EXPENSE FLOW =================
+    // ================= EXPENSE =================
     const data = await parseExpense(message);
-
-    console.log("Parsed Data:", data);
 
     const expense = await Expense.create({
       ...data,
       phone
     });
-
-    console.log("Saved Expense:", expense);
 
     const reply = `
       <Response>

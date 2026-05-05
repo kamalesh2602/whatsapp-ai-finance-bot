@@ -1,6 +1,5 @@
 import fetch from "node-fetch";
 
-// fallback parser
 function basicParser(text) {
   const amountMatch = text.match(/\d+/);
   const amount = amountMatch ? parseInt(amountMatch[0]) : 0;
@@ -25,32 +24,14 @@ export async function parseExpense(text) {
       `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
       {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           contents: [
             {
-              parts: [
-                {
-                  text: `
-Extract expense details from this message:
-
-"${text}"
-
-Return JSON like:
-{
-  "amount": 500,
-  "category": "food",
-  "merchant": "KFC",
-  "type": "expense"
-}
-                  `,
-                },
-              ],
-            },
-          ],
-        }),
+              parts: [{ text: `Extract expense JSON from: "${text}"` }]
+            }
+          ]
+        })
       }
     );
 
@@ -59,19 +40,15 @@ Return JSON like:
     const textOutput =
       data.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
-    console.log("RAW AI OUTPUT:", textOutput);
-
     if (!textOutput) return basicParser(text);
 
     try {
-      const cleaned = textOutput.replace(/```json|```/g, "").trim();
-      return JSON.parse(cleaned);
+      return JSON.parse(textOutput.replace(/```json|```/g, "").trim());
     } catch {
       return basicParser(text);
     }
 
-  } catch (err) {
-    console.log("AI ERROR:", err.message);
+  } catch {
     return basicParser(text);
   }
 }
