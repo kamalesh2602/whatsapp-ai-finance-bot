@@ -29,7 +29,6 @@ function isExpense(text) {
 
 function isQuery(text) {
   const msg = text.toLowerCase();
-
   return (
     msg.includes("how much") ||
     msg.includes("total") ||
@@ -40,12 +39,22 @@ function isQuery(text) {
 
 function isInsightQuery(text) {
   const msg = text.toLowerCase();
-
   return (
     msg.includes("analysis") ||
     msg.includes("insight") ||
     msg.includes("summary") ||
     msg.includes("how is my spending")
+  );
+}
+
+function isComparisonQuery(text) {
+  const msg = text.toLowerCase();
+  return (
+    msg.includes("compare") ||
+    msg.includes("trend") ||
+    msg.includes("increase") ||
+    msg.includes("decrease") ||
+    msg.includes("last month")
   );
 }
 
@@ -89,6 +98,18 @@ function getDateRange(text) {
   return { start, end };
 }
 
+// ---------------- MONTH RANGE ----------------
+function getMonthRanges() {
+  const now = new Date();
+
+  return {
+    thisMonthStart: new Date(now.getFullYear(), now.getMonth(), 1),
+    now,
+    lastMonthStart: new Date(now.getFullYear(), now.getMonth() - 1, 1),
+    lastMonthEnd: new Date(now.getFullYear(), now.getMonth(), 0)
+  };
+}
+
 // ---------------- WEBHOOK ----------------
 app.post("/webhook", async (req, res) => {
   const message = req.body.Body;
@@ -98,6 +119,54 @@ app.post("/webhook", async (req, res) => {
   console.log("Incoming:", message);
 
   try {
+
+    // ================= COMPARISON =================
+    if (isComparisonQuery(message)) {
+
+      const { thisMonthStart, now, lastMonthStart, lastMonthEnd } = getMonthRanges();
+
+      const thisMonth = await Expense.aggregate([
+        {
+          $match: {
+            phone,
+            createdAt: { $gte: thisMonthStart, $lte: now }
+          }
+        },
+        {
+          $group: { _id: null, total: { $sum: "$amount" } }
+        }
+      ]);
+
+      const lastMonth = await Expense.aggregate([
+        {
+          $match: {
+            phone,
+            createdAt: { $gte: lastMonthStart, $lte: lastMonthEnd }
+          }
+        },
+        {
+          $group: { _id: null, total: { $sum: "$amount" } }
+        }
+      ]);
+
+      const thisTotal = thisMonth[0]?.total || 0;
+      const lastTotal = lastMonth[0]?.total || 0;
+
+      let trend = "";
+
+      if (thisTotal > lastTotal) trend = "📈 Spending increased";
+      else if (thisTotal < lastTotal) trend = "📉 Spending decreased";
+      else trend = "➡️ Spending is same";
+
+      const reply = `
+💰 This Month: ₹${thisTotal}
+💰 Last Month: ₹${lastTotal}
+
+${trend}
+      `;
+
+      return res.send(`<Response><Message>${reply}</Message></Response>`);
+    }
 
     // ================= INSIGHTS =================
     if (isInsightQuery(message)) {
@@ -113,24 +182,18 @@ app.post("/webhook", async (req, res) => {
       ]);
 
       if (!data.length) {
-        return res.send(`
-          <Response>
-            <Message>No data yet. Start adding expenses.</Message>
-          </Response>
-        `);
+        return res.send(`<Response><Message>No data yet</Message></Response>`);
       }
 
-      const total = data.reduce((sum, item) => sum + item.total, 0);
+      const total = data.reduce((sum, i) => sum + i.total, 0);
       const top = data.sort((a, b) => b.total - a.total)[0];
-
-      const reply = `
-💰 Total: ₹${total}
-📊 Top: ${top._id} (₹${top.total})
-      `;
 
       return res.send(`
         <Response>
-          <Message>${reply}</Message>
+          <Message>
+💰 Total: ₹${total}
+📊 Top: ${top._id} (₹${top.total})
+          </Message>
         </Response>
       `);
     }
@@ -141,38 +204,22 @@ app.post("/webhook", async (req, res) => {
       const category = extractCategory(message);
       const { start, end } = getDateRange(message);
 
-      let matchStage = { phone };
+      let match = { phone };
 
-      if (category) matchStage.category = category;
-
-      if (start && end) {
-        matchStage.createdAt = { $gte: start, $lte: end };
-      }
+      if (category) match.category = category;
+      if (start && end) match.createdAt = { $gte: start, $lte: end };
 
       const total = await Expense.aggregate([
-        { $match: matchStage },
-        {
-          $group: {
-            _id: null,
-            total: { $sum: "$amount" }
-          }
-        }
+        { $match: match },
+        { $group: { _id: null, total: { $sum: "$amount" } } }
       ]);
 
       const amount = total[0]?.total || 0;
 
-      let replyText = `💰 You spent ₹${amount}`;
+      let reply = `💰 You spent ₹${amount}`;
+      if (category) reply += ` on ${category}`;
 
-      if (category) replyText += ` on ${category}`;
-      if (message.includes("last month")) replyText += " last month";
-      else if (message.includes("this month")) replyText += " this month";
-      else if (message.includes("this week")) replyText += " this week";
-
-      return res.send(`
-        <Response>
-          <Message>${replyText}</Message>
-        </Response>
-      `);
+      return res.send(`<Response><Message>${reply}</Message></Response>`);
     }
 
     // ================= EXPENSE =================
@@ -183,28 +230,16 @@ app.post("/webhook", async (req, res) => {
       phone
     });
 
-    const reply = `
+    return res.send(`
       <Response>
-        <Message>
-          ✅ Added ₹${expense.amount} to ${expense.category}
-        </Message>
-      </Response>
-    `;
-
-    res.set("Content-Type", "text/xml");
-    res.send(reply);
-
-  } catch (err) {
-    console.error("ERROR:", err.message);
-
-    res.set("Content-Type", "text/xml");
-    res.send(`
-      <Response>
-        <Message>❌ Couldn't understand. Try again.</Message>
+        <Message>✅ Added ₹${expense.amount} to ${expense.category}</Message>
       </Response>
     `);
+
+  } catch (err) {
+    console.error(err);
+    return res.send(`<Response><Message>❌ Error</Message></Response>`);
   }
 });
 
-// ---------------- SERVER ----------------
-app.listen(3000, () => console.log("Server running on port 3000"));
+app.listen(3000, () => console.log("Server running"));
