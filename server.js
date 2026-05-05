@@ -41,7 +41,6 @@ function isInsightQuery(text) {
   const msg = text.toLowerCase();
   return (
     msg.includes("analysis") ||
-    msg.includes("insight") ||
     msg.includes("summary") ||
     msg.includes("how is my spending")
   );
@@ -51,10 +50,19 @@ function isComparisonQuery(text) {
   const msg = text.toLowerCase();
   return (
     msg.includes("compare") ||
-    msg.includes("trend") ||
-    msg.includes("increase") ||
-    msg.includes("decrease") ||
+    msg.includes("trend vs") ||
     msg.includes("last month")
+  );
+}
+
+function isTrendQuery(text) {
+  const msg = text.toLowerCase();
+  return (
+    msg.includes("breakdown") ||
+    msg.includes("distribution") ||
+    msg.includes("where am i spending") ||
+    msg.includes("spending most") ||
+    msg.includes("trend")
   );
 }
 
@@ -98,7 +106,7 @@ function getDateRange(text) {
   return { start, end };
 }
 
-// ---------------- MONTH RANGE ----------------
+// ---------------- MONTH RANGES ----------------
 function getMonthRanges() {
   const now = new Date();
 
@@ -126,46 +134,34 @@ app.post("/webhook", async (req, res) => {
       const { thisMonthStart, now, lastMonthStart, lastMonthEnd } = getMonthRanges();
 
       const thisMonth = await Expense.aggregate([
-        {
-          $match: {
-            phone,
-            createdAt: { $gte: thisMonthStart, $lte: now }
-          }
-        },
-        {
-          $group: { _id: null, total: { $sum: "$amount" } }
-        }
+        { $match: { phone, createdAt: { $gte: thisMonthStart, $lte: now } } },
+        { $group: { _id: null, total: { $sum: "$amount" } } }
       ]);
 
       const lastMonth = await Expense.aggregate([
-        {
-          $match: {
-            phone,
-            createdAt: { $gte: lastMonthStart, $lte: lastMonthEnd }
-          }
-        },
-        {
-          $group: { _id: null, total: { $sum: "$amount" } }
-        }
+        { $match: { phone, createdAt: { $gte: lastMonthStart, $lte: lastMonthEnd } } },
+        { $group: { _id: null, total: { $sum: "$amount" } } }
       ]);
 
       const thisTotal = thisMonth[0]?.total || 0;
       const lastTotal = lastMonth[0]?.total || 0;
 
-      let trend = "";
+      let trend = thisTotal > lastTotal
+        ? "📈 Spending increased"
+        : thisTotal < lastTotal
+        ? "📉 Spending decreased"
+        : "➡️ Spending same";
 
-      if (thisTotal > lastTotal) trend = "📈 Spending increased";
-      else if (thisTotal < lastTotal) trend = "📉 Spending decreased";
-      else trend = "➡️ Spending is same";
-
-      const reply = `
+      return res.send(`
+        <Response>
+          <Message>
 💰 This Month: ₹${thisTotal}
 💰 Last Month: ₹${lastTotal}
 
 ${trend}
-      `;
-
-      return res.send(`<Response><Message>${reply}</Message></Response>`);
+          </Message>
+        </Response>
+      `);
     }
 
     // ================= INSIGHTS =================
@@ -173,12 +169,7 @@ ${trend}
 
       const data = await Expense.aggregate([
         { $match: { phone } },
-        {
-          $group: {
-            _id: "$category",
-            total: { $sum: "$amount" }
-          }
-        }
+        { $group: { _id: "$category", total: { $sum: "$amount" } } }
       ]);
 
       if (!data.length) {
@@ -196,6 +187,37 @@ ${trend}
           </Message>
         </Response>
       `);
+    }
+
+    // ================= TREND =================
+    if (isTrendQuery(message)) {
+
+      const data = await Expense.aggregate([
+        { $match: { phone } },
+        { $group: { _id: "$category", total: { $sum: "$amount" } } }
+      ]);
+
+      if (!data.length) {
+        return res.send(`<Response><Message>No data available</Message></Response>`);
+      }
+
+      const total = data.reduce((sum, item) => sum + item.total, 0);
+
+      const breakdown = data.map(item => ({
+        category: item._id,
+        total: item.total,
+        percent: ((item.total / total) * 100).toFixed(1)
+      })).sort((a, b) => b.total - a.total);
+
+      let reply = "📊 Spending Breakdown:\n";
+
+      breakdown.forEach(item => {
+        reply += `\n${item.category}: ₹${item.total} (${item.percent}%)`;
+      });
+
+      reply += `\n\n👉 You spend most on ${breakdown[0].category}`;
+
+      return res.send(`<Response><Message>${reply}</Message></Response>`);
     }
 
     // ================= QUERY =================
