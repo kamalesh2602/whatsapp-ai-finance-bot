@@ -3,13 +3,13 @@ dotenv.config();
 
 import express from "express";
 import mongoose from "mongoose";
-
+import cors from "cors";
 import { parseExpense } from "./services/aiParser.js";
 import Expense from "./models/Expense.js";
 import Budget from "./models/Budget.js";
 
 const app = express();
-
+app.use(cors());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
@@ -189,6 +189,50 @@ ${alert}
       </Response>
     `);
   }
+});
+
+app.get("/api/summary", async (req, res) => {
+  let phone = req.query.phone;
+
+  phone = decodeURIComponent(phone); // 🔥 FIX
+
+  console.log("Correct phone:", phone);
+
+  const total = await Expense.aggregate([
+    { $match: { phone } },
+    { $group: { _id: null, total: { $sum: "$amount" } } }
+  ]);
+
+  const category = await Expense.aggregate([
+    { $match: { phone } },
+    { $group: { _id: "$category", total: { $sum: "$amount" } } }
+  ]);
+
+  res.json({
+    total: total[0]?.total || 0,
+    category
+  });
+});
+
+app.get("/api/trend", async (req, res) => {
+  let phone = req.query.phone;
+
+  phone = decodeURIComponent(phone); // 🔥 FIX
+
+  const trend = await Expense.aggregate([
+    { $match: { phone } },
+    {
+      $group: {
+        _id: {
+          month: { $month: "$createdAt" },
+          year: { $year: "$createdAt" }
+        },
+        total: { $sum: "$amount" }
+      }
+    }
+  ]);
+
+  res.json(trend);
 });
 
 // ---------------- START ----------------
