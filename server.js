@@ -1,6 +1,6 @@
 import dotenv from "dotenv";
 dotenv.config();
-
+console.log("KEY:", process.env.GEMINI_API_KEY);
 import express from "express";
 import mongoose from "mongoose";
 import cors from "cors";
@@ -233,6 +233,61 @@ app.get("/api/trend", async (req, res) => {
   ]);
 
   res.json(trend);
+});
+
+
+app.get("/api/budgets", async (req, res) => {
+
+  let phone = req.query.phone;
+
+  phone = decodeURIComponent(phone);
+
+  const budgets = await Budget.find({ phone });
+
+  const result = [];
+
+  for (const budget of budgets) {
+
+    const total = await Expense.aggregate([
+      {
+        $match: {
+          phone,
+          category: budget.category
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: "$amount" }
+        }
+      }
+    ]);
+
+    const spent = total[0]?.total || 0;
+
+    result.push({
+      category: budget.category,
+      limit: budget.limit,
+      spent,
+      percent: ((spent / budget.limit) * 100).toFixed(1)
+    });
+  }
+
+  res.json(result);
+});
+
+
+app.get("/api/recent", async (req, res) => {
+
+  let phone = req.query.phone;
+
+  phone = decodeURIComponent(phone);
+
+  const transactions = await Expense.find({ phone })
+    .sort({ createdAt: -1 })
+    .limit(5);
+
+  res.json(transactions);
 });
 
 // ---------------- START ----------------
